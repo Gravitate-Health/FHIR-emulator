@@ -1,0 +1,163 @@
+from flask import Flask, request, jsonify, make_response
+import os
+import json
+from urllib.parse import urlencode, urlunparse
+
+app = Flask(__name__, template_folder='templates')
+
+import os as _os
+
+# Base directory used if FILES_DIR env var is not set
+BASE_DIR = os.path.dirname(__file__)
+
+
+
+@app.route('/')
+def index():
+    # Minimal HTML response; templates removed per cleanup request
+    message = request.args.get('message', 'Welcome to the simple server')
+    html = f"""
+    <html><head><title>FHIR Emulator</title></head>
+    <body>
+    <h1>FHIR Emulator</h1>
+    <p>{message}</p>
+    <p>See README for endpoints and usage.</p>
+    </body></html>
+    """
+    resp = make_response(html)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return resp
+
+
+def load_json_files(folder):
+    """Yield parsed JSON objects from files in folder (sorted by filename)."""
+    if not os.path.isdir(folder):
+        return []
+    files = sorted(f for f in os.listdir(folder) if f.lower().endswith('.json'))
+    results = []
+    for fn in files:
+        path = os.path.join(folder, fn)
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                results.append(json.load(fh))
+        except Exception:
+            # skip invalid files
+            continue
+    return results
+
+
+def make_bundle(total, entries=None, base_url=None):
+    """Construct a FHIR Bundle dict. entries is a list of resource dicts.
+    If entries is empty or None, don't include link/search related fields.
+    """
+    bundle = {'resourceType': 'Bundle', 'type': 'searchset', 'total': total}
+    if entries is not None:
+        bundle['entry'] = []
+        for res in entries:
+            bundle['entry'].append({'resource': res})
+    else:
+        # per requirement, no entries key when entries is None
+        pass
+    return bundle
+
+
+def render_bundle_response(bundle):
+    resp = make_response(json.dumps(bundle, ensure_ascii=False))
+    resp.headers['Content-Type'] = 'application/fhir+json; charset=utf-8'
+    return resp
+
+
+@app.route('/epi/api/fhir/Bundle')
+@app.route('/ips/api/fhir/Patient')
+def fhir_endpoint():
+    # Determine resource type from path: either /Bundle or /Patient
+    path = request.path
+    # allow dynamic FILES_DIR via env var for runtime bind mounts
+    files_dir = os.environ.get('FILES_DIR', os.path.join(BASE_DIR, 'files'))
+    if path.endswith('/Bundle'):
+        resource_folder = os.path.join(files_dir, 'Bundle')
+    else:
+        resource_folder = os.path.join(files_dir, 'Patient')
+
+    # _count controls page size; default 0
+    count = request.args.get('_count', '0')
+    try:
+        count_i = int(count)
+    except ValueError:
+        return jsonify({'error': '_count must be an integer'}), 400
+
+    # Support _page (1-based) as a convenience; if provided, translate to offset
+    page = request.args.get('_page')
+    if page is not None:
+        try:
+            page_i = int(page)
+            if page_i < 1:
+                raise ValueError()
+            offset_i = (page_i - 1) * count_i
+        except ValueError:
+            return jsonify({'error': '_page must be a positive integer'}), 400
+    else:
+        # _offset controls paging start index; default 0
+        offset = request.args.get('_offset', '0')
+        try:
+            offset_i = int(offset)
+        except ValueError:
+            return jsonify({'error': '_offset must be an integer'}), 400
+
+    # Load all matching resources from the appropriate folder
+    resources = load_json_files(resource_folder)
+    total = len(resources)
+
+    if count_i == 0:
+        # Return bundle with total set and no entries/links
+        bundle = make_bundle(total, entries=None)
+        bundle['total'] = total
+        return render_bundle_response(bundle)
+
+    # count_i > 0: get slice [offset_i: offset_i+count_i]
+    start = max(0, offset_i)
+    end = start + max(0, count_i)
+    page_entries = resources[start:end]
+    bundle = make_bundle(total, entries=page_entries)
+
+    # Build paging links (self/next/prev/last) when appropriate
+    # build URLs using urllib, preserving other query params; replace _offset accordingly
+    def make_link(new_offset, use_page=False):
+        # build querydict preserving other params
+        query = {}
+        for k, v in request.args.items():
+            if k in ('_offset', '_page'):
+                continue
+            query[k] = v
+        if use_page and request.args.get('_page') is not None:
+            # compute page number from offset
+            page_num = (new_offset // count_i) + 1
+            query['_page'] = str(page_num)
+        else:
+            query['_offset'] = str(new_offset)
+        url = request.base_url
+        return url + ('?' + urlencode(query) if query else '')
+
+    links = []
+    # self
+    links.append({'relation': 'self', 'url': make_link(start, use_page=(request.args.get('_page') is not None))})
+    # next
+    if end < total:
+        links.append({'relation': 'next', 'url': make_link(end, use_page=(request.args.get('_page') is not None))})
+    # prev
+    if start > 0:
+        prev_offset = max(0, start - count_i)
+        links.append({'relation': 'prev', 'url': make_link(prev_offset, use_page=(request.args.get('_page') is not None))})
+    # last
+    if total > 0:
+        last_offset = ((total - 1) // count_i) * count_i
+        links.append({'relation': 'last', 'url': make_link(last_offset, use_page=(request.args.get('_page') is not None))})
+
+    if links:
+        bundle['link'] = links
+
+    return render_bundle_response(bundle)
+
+
+if __name__ == '__main__':
+    app.run(debug=True, host='127.0.0.1', port=5000)
