@@ -46,6 +46,58 @@ def load_json_files(folder):
     return results
 
 
+def matches_search_params(resource, search_params):
+    """Check if a resource matches all provided search parameters.
+    Supports searching on _id and nested fields like name, gender, birthdate, etc.
+    Search is case-insensitive substring/prefix matching.
+    """
+    if not search_params:
+        return True
+    
+    for param, value in search_params.items():
+        if param == '_id':
+            # Direct field match, exact case-insensitive
+            if str(resource.get('id', '')).lower() != value.lower():
+                return False
+        elif param == 'name':
+            # Special handling for name (can be array of objects or string)
+            names = resource.get('name', [])
+            if not isinstance(names, list):
+                names = [names]
+            found = False
+            for name_obj in names:
+                if isinstance(name_obj, dict):
+                    # Check given and family fields
+                    given = name_obj.get('given', [])
+                    family = name_obj.get('family', '')
+                    if not isinstance(given, list):
+                        given = [given]
+                    full_name = ' '.join(given) + ' ' + family
+                    if value.lower() in full_name.lower():
+                        found = True
+                        break
+                elif isinstance(name_obj, str):
+                    if value.lower() in name_obj.lower():
+                        found = True
+                        break
+            if not found:
+                return False
+        elif param == 'gender':
+            # Direct field match, case-insensitive
+            if str(resource.get('gender', '')).lower() != value.lower():
+                return False
+        elif param == 'birthdate':
+            # Prefix match for date (e.g., 1980 matches 1980-01-01)
+            if not str(resource.get('birthDate', '')).startswith(value):
+                return False
+        else:
+            # Generic field matching: case-insensitive substring
+            if value.lower() not in str(resource.get(param, '')).lower():
+                return False
+    
+    return True
+
+
 def make_bundle(total, entries=None, base_url=None):
     """Construct a FHIR Bundle dict. entries is a list of resource dicts.
     If entries is empty or None, don't include link/search related fields.
@@ -104,8 +156,18 @@ def fhir_endpoint():
         except ValueError:
             return jsonify({'error': '_offset must be an integer'}), 400
 
-    # Load all matching resources from the appropriate folder
-    resources = load_json_files(resource_folder)
+    # Load all resources from the appropriate folder
+    all_resources = load_json_files(resource_folder)
+    
+    # Extract search parameters (exclude pagination params)
+    search_params = {}
+    pagination_params = {'_count', '_offset', '_page'}
+    for param, value in request.args.items():
+        if param not in pagination_params:
+            search_params[param] = value
+    
+    # Filter resources by search parameters
+    resources = [r for r in all_resources if matches_search_params(r, search_params)]
     total = len(resources)
 
     if count_i == 0:
