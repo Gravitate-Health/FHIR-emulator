@@ -133,7 +133,22 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
     # resource_type is either 'Bundle' or 'Patient'
     files_dir = os.environ.get('FILES_DIR', os.path.join(BASE_DIR, 'files'))
     resource_folder = os.path.join(files_dir, resource_type)
-    count = request.args.get('_count', '0')
+    
+    # Determine if explicit paging parameters were supplied
+    has_count = '_count' in request.args
+    has_page = '_page' in request.args
+    has_offset = '_offset' in request.args
+    
+    # Default page size when no paging params supplied
+    DEFAULT_PAGE_SIZE = 10
+    
+    if not (has_count or has_page or has_offset):
+        # No paging params supplied: return first DEFAULT_PAGE_SIZE resources
+        count = str(DEFAULT_PAGE_SIZE)
+    else:
+        # At least one paging param supplied: use _count (default to 0 for totals-only)
+        count = request.args.get('_count', '0')
+    
     try:
         count_i = int(count)
     except ValueError:

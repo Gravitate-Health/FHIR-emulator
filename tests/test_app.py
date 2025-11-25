@@ -78,6 +78,27 @@ def test_fhir_patient_with_entries(client):
     assert len(data['entry']) <= 1
 
 
+def test_fhir_patient_count_two(client):
+    # Explicitly request 2 resources
+    resp = client.get('/fhir/Patient?_count=2')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['total'] == 3  # total 3 patients in test data
+    assert 'entry' in data
+    assert len(data['entry']) == 2  # but return only 2
+
+
+def test_fhir_bundle_default_pagination(client):
+    # No paging params: should return first 10 (default) with links
+    resp = client.get('/fhir/Bundle')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['total'] == 3  # total 3 bundles
+    assert 'entry' in data
+    assert len(data['entry']) == 3  # all fit in default 10
+    assert 'link' in data  # should have pagination links
+
+
 def test_fhir_patient_paging_links(client):
     resp = client.get('/fhir/Patient?_count=1&_page=1')
     assert resp.status_code == 200
