@@ -5,8 +5,6 @@ from urllib.parse import urlencode, urlunparse
 
 app = Flask(__name__, template_folder='templates')
 
-import os as _os
-
 # Base directory used if FILES_DIR env var is not set
 BASE_DIR = os.path.dirname(__file__)
 
@@ -90,6 +88,9 @@ def matches_search_params(resource, search_params):
             # Prefix match for date (e.g., 1980 matches 1980-01-01)
             if not str(resource.get('birthDate', '')).startswith(value):
                 return False
+        elif param == '_format' and value.lower() in ('json', 'fhir+json'):
+            # Ignore _format parameter for matching
+            continue
         else:
             # Generic field matching: case-insensitive substring
             if value.lower() not in str(resource.get(param, '')).lower():
@@ -119,19 +120,19 @@ def render_bundle_response(bundle):
     return resp
 
 
-@app.route('/epi/api/fhir/Bundle')
-@app.route('/ips/api/fhir/Patient')
-def fhir_endpoint():
-    # Determine resource type from path: either /Bundle or /Patient
-    path = request.path
-    # allow dynamic FILES_DIR via env var for runtime bind mounts
-    files_dir = os.environ.get('FILES_DIR', os.path.join(BASE_DIR, 'files'))
-    if path.endswith('/Bundle'):
-        resource_folder = os.path.join(files_dir, 'Bundle')
-    else:
-        resource_folder = os.path.join(files_dir, 'Patient')
+def create_fhir_endpoint(resource_type):
+    """Factory function to create FHIR endpoint handlers for different resource types."""
+    def handler(resource_id=None, extra=None):
+        return fhir_endpoint_impl(resource_type, resource_id, extra)
+    handler.__name__ = f'fhir_{resource_type.lower()}_endpoint'
+    return handler
 
-    # _count controls page size; default 0
+
+
+def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
+    # resource_type is either 'Bundle' or 'Patient'
+    files_dir = os.environ.get('FILES_DIR', os.path.join(BASE_DIR, 'files'))
+    resource_folder = os.path.join(files_dir, resource_type)
     count = request.args.get('_count', '0')
     try:
         count_i = int(count)
@@ -165,6 +166,10 @@ def fhir_endpoint():
     for param, value in request.args.items():
         if param not in pagination_params:
             search_params[param] = value
+    
+    # If resource_id is in the path, add it as a search parameter (_id)
+    if resource_id is not None:
+        search_params['_id'] = resource_id
     
     # Filter resources by search parameters
     resources = [r for r in all_resources if matches_search_params(r, search_params)]
@@ -219,6 +224,30 @@ def fhir_endpoint():
         bundle['link'] = links
 
     return render_bundle_response(bundle)
+
+
+# Register dynamic routes under a single simplified prefix `/fhir/`.
+# This maps any resource type folder under `FILES_DIR` to `/fhir/<resource_type>`.
+app.add_url_rule(
+    '/fhir/<resource_type>',
+    endpoint='fhir_base',
+    view_func=fhir_endpoint_impl,
+    defaults={'resource_id': None, 'extra': None},
+    strict_slashes=False,
+)
+app.add_url_rule(
+    '/fhir/<resource_type>/<resource_id>',
+    endpoint='fhir_id',
+    view_func=fhir_endpoint_impl,
+    defaults={'extra': None},
+    strict_slashes=False,
+)
+app.add_url_rule(
+    '/fhir/<resource_type>/<resource_id>/<extra>',
+    endpoint='fhir_id_extra',
+    view_func=fhir_endpoint_impl,
+    strict_slashes=False,
+)
 
 
 if __name__ == '__main__':

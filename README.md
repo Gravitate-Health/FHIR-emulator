@@ -1,14 +1,14 @@
 # FHIR Emulator
 
-A lightweight Flask-based FHIR server emulator for testing and development of ePIs and IPS resources within the FOSPS system.
+A lightweight Flask-based FHIR server emulator for testing and development of ePIs and IPS resources.
 
 ## Endpoints
 
-### `/epi/api/fhir/Bundle`
-Returns FHIR Bundle resources with optional search and pagination support.
+The server exposes generalized FHIR-style endpoint :
 
-### `/ips/api/fhir/Patient`
-Returns FHIR Patient resources with optional search and pagination support.
+- `/fhir/<resource_type>`
+
+`<resource_type>` maps directly to a folder under the configured `FILES_DIR` (see below) and the same behavior applies to all resource types (Bundle, Patient, Organization, etc.). Examples below assume `Bundle` and `Patient` are present.
 
 ## Query Parameters
 
@@ -31,43 +31,51 @@ Multiple search parameters are combined with AND logic (all must match).
 
 ### Get total count without entries
 ```
-GET /ips/api/fhir/Patient?_count=0
+GET /fhir/Patient?_count=0
 ```
 Response: Bundle with `total` set, no `entry` or `link` keys.
 
 ### Get first page of 10 patients
 ```
-GET /ips/api/fhir/Patient?_count=10&_page=1
+GET /fhir/Patient?_count=10&_page=1
 ```
 
 ### Search for a patient by id
 ```
-GET /ips/api/fhir/Patient?_id=patient-1&_count=10
+GET /fhir/Patient?_id=patient-1&_count=10
 ```
 
 ### Search patients by name
 ```
-GET /ips/api/fhir/Patient?name=John&_count=10
+GET /fhir/Patient?name=John&_count=10
 ```
 
 ### Search female patients, paginated
 ```
-GET /ips/api/fhir/Patient?gender=female&_count=5&_page=1
+GET /fhir/Patient?gender=female&_count=5&_page=1
 ```
 
 ### Search patients born in 1980
 ```
-GET /ips/api/fhir/Patient?birthdate=1980&_count=10
+GET /fhir/Patient?birthdate=1980&_count=10
 ```
 
 ### Combine search with pagination (offset-based)
 ```
-GET /ips/api/fhir/Patient?gender=female&_count=1&_offset=0
+GET /fhir/Patient?gender=female&_count=1&_offset=0
 ```
 
 ### Search for a specific bundle
 ```
-GET /epi/api/fhir/Bundle?_id=bundle-1&_count=10
+GET /fhir/Bundle?_id=bundle-1&_count=10
+```
+
+### Access resources by path (ID and extra)
+You can access a resource by placing the id in the path. Any extra path element after the id is accepted (for example `$summary`) and is treated like a normal search request.
+```
+GET /fhir/Bundle/bundle-1?_count=10
+GET /fhir/Patient/patient-1?_count=10
+GET /fhir/Patient/patient-1/$summary?_count=10
 ```
 
 ## Running Locally
@@ -99,8 +107,25 @@ Run with external resource directory:
 docker run -p 5000:5000 -v C:\path\to\resources:C:\resources -e FILES_DIR=C:\resources fhir-emulator:local
 ```
 
-The `FILES_DIR` environment variable controls where the app loads Bundle and Patient resources.  
-Expected structure: `$FILES_DIR/Bundle/*.json` and `$FILES_DIR/Patient/*.json`.
+The `FILES_DIR` environment variable controls where the app loads resources. The server expects one directory per resource type under `FILES_DIR`.
+
+Expected structure (example):
+
+```
+$FILES_DIR/
+	Bundle/
+		bundle1.json
+		bundle2.json
+	Patient/
+		patient1.json
+		patient2.json
+	Organization/
+		org1.json
+```
+
+Any resource type present as a folder under `FILES_DIR` becomes available at the matching `<resource_type>` endpoint.
+
+If you prefer to limit what the server will serve, you can either only create the folders you want to expose or add a simple whitelist in `app.py` before returning results.
 
 ## Testing
 
@@ -115,3 +140,13 @@ Test coverage includes:
 - Search by id, name, gender, birthdate
 - Empty results
 - Combined search and pagination
+
+## Extending with new resource types
+
+To add a new resource type:
+
+1. Create a directory named after the resource under `FILES_DIR` (for example `Organization`).
+2. Place JSON resource files in that folder (one resource per file).
+3. No code changes are required: the dynamic routes `/.../<resource_type>` will serve the new resources automatically.
+
+If you want to add custom behavior for a specific resource type or namespace you can register explicit Flask routes in `app.py` and delegate to the same `fhir_endpoint_impl()` logic.
