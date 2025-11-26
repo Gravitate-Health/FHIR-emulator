@@ -134,6 +134,28 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
     files_dir = os.environ.get('FILES_DIR', os.path.join(BASE_DIR, 'files'))
     resource_folder = os.path.join(files_dir, resource_type)
     
+    # Track if this is a $summary operation (always return bundle, never single resource)
+    is_summary_operation = resource_id == '$summary'
+    
+    # Handle $summary special case: extract parameters from POST body
+    if resource_id == '$summary' and request.method == 'POST':
+        try:
+            body = request.get_json()
+            if body and body.get('resourceType') == 'Parameters':
+                # Extract parameters from the Parameters resource
+                parameters = body.get('parameter', [])
+                for param in parameters:
+                    param_name = param.get('name')
+                    if param_name == 'identifier':
+                        # Extract the identifier value
+                        identifier_val = param.get('valueIdentifier', {}).get('value')
+                        if identifier_val:
+                            resource_id = identifier_val
+                            break
+        except Exception:
+            # If JSON parsing fails or structure is unexpected, continue normally
+            pass
+    
     # Determine if explicit paging parameters were supplied
     has_count = '_count' in request.args
     has_page = '_page' in request.args
@@ -182,16 +204,17 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
         if param not in pagination_params:
             search_params[param] = value
     
-    # If resource_id is in the path, add it as a search parameter (_id)
-    if resource_id is not None:
+    # If resource_id is in the path (and not a special operation like $summary), add it as a search parameter (_id)
+    if resource_id is not None and not resource_id.startswith('$'):
         search_params['_id'] = resource_id
     
     # Filter resources by search parameters
     resources = [r for r in all_resources if matches_search_params(r, search_params)]
     total = len(resources)
 
-    if total == 1:
-        # Return the single matching resource directly
+    # Return single resource directly only if: ID lookup AND no explicit paging params AND not a special operation
+    if total == 1 and resource_id is not None and not (has_count or has_page or has_offset) and not resource_id.startswith('$') and not is_summary_operation:
+        # Return the single matching resource directly (only for simple ID lookups without paging or special operations)
         return resources[0]
 
     if count_i == 0:
@@ -247,12 +270,14 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
 
 # Register dynamic routes under a single simplified prefix `/fhir/`.
 # This maps any resource type folder under `FILES_DIR` to `/fhir/<resource_type>`.
+# Support both GET and POST methods (POST needed for $summary with Parameters body)
 app.add_url_rule(
     '/fhir/<resource_type>',
     endpoint='fhir_base',
     view_func=fhir_endpoint_impl,
     defaults={'resource_id': None, 'extra': None},
     strict_slashes=False,
+    methods=['GET', 'POST']
 )
 app.add_url_rule(
     '/fhir/<resource_type>/<resource_id>',
@@ -260,12 +285,14 @@ app.add_url_rule(
     view_func=fhir_endpoint_impl,
     defaults={'extra': None},
     strict_slashes=False,
+    methods=['GET', 'POST']
 )
 app.add_url_rule(
     '/fhir/<resource_type>/<resource_id>/<extra>',
     endpoint='fhir_id_extra',
     view_func=fhir_endpoint_impl,
     strict_slashes=False,
+    methods=['GET', 'POST']
 )
 
 

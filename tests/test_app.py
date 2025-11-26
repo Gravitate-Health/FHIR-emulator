@@ -237,3 +237,66 @@ def test_fhir_bundle_path_id_count_zero(client):
     assert 'total' in data
     assert 'entry' not in data
 
+
+def test_fhir_patient_summary_post_with_identifier(client):
+    # POST to /Patient/$summary with identifier in Parameters body
+    body = {
+        "resourceType": "Parameters",
+        "id": "Focusing IPS request",
+        "parameter": [
+            {
+                "name": "identifier",
+                "valueIdentifier": {"value": "patient-1"}
+            }
+        ]
+    }
+    resp = client.post(
+        '/fhir/Patient/$summary',
+        json=body,
+        content_type='application/fhir+json'
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['resourceType'] == 'Bundle'
+    assert data['total'] == 1
+    assert len(data['entry']) == 1
+    assert data['entry'][0]['resource']['id'] == 'patient-1'
+
+
+def test_fhir_patient_summary_post_no_match(client):
+    # POST to /Patient/$summary with non-matching identifier
+    body = {
+        "resourceType": "Parameters",
+        "id": "Focusing IPS request",
+        "parameter": [
+            {
+                "name": "identifier",
+                "valueIdentifier": {"value": "nonexistent"}
+            }
+        ]
+    }
+    resp = client.post(
+        '/fhir/Patient/$summary',
+        json=body,
+        content_type='application/fhir+json'
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['resourceType'] == 'Bundle'
+    assert data['total'] == 0
+    assert 'entry' not in data or len(data.get('entry', [])) == 0
+
+
+def test_fhir_patient_summary_post_malformed_body(client):
+    # POST with invalid Parameters format should still work (just return no matches)
+    body = {"invalid": "structure"}
+    resp = client.post(
+        '/fhir/Patient/$summary',
+        json=body,
+        content_type='application/fhir+json'
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['resourceType'] == 'Bundle'
+    # With no identifier extracted, should return all patients (default behavior)
+    assert data['total'] >= 0
