@@ -190,6 +190,10 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
     resources = [r for r in all_resources if matches_search_params(r, search_params)]
     total = len(resources)
 
+    if total == 1:
+        # Return the single matching resource directly
+        return resources[0]
+
     if count_i == 0:
         # Return bundle with total set and no entries/links
         bundle = make_bundle(total, entries=None)
