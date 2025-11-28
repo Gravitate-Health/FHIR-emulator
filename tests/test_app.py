@@ -211,11 +211,15 @@ def test_fhir_patient_path_id(client):
 
 def test_fhir_patient_path_id_with_summary(client):
     # Access patient with summary: /Patient/{id}/$summary
-    # Should behave the same as /Patient/{id} since JSON already contains summary
-    resp = client.get('/fhir/Patient/patient-2/$summary?_count=10')
+    # Should return the patient-2_summary.json file
+    resp = client.get('/fhir/Patient/patient-2/$summary')
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data['total'] == 1
+    # The summary file should be a Bundle of type "document"
+    assert data['resourceType'] == 'Bundle'
+    assert data['type'] == 'document'
+    assert data['id'] == 'patient-2-summary'
+    # Verify it contains the patient resource
     assert len(data['entry']) == 1
     assert data['entry'][0]['resource']['id'] == 'patient-2'
 
@@ -257,8 +261,11 @@ def test_fhir_patient_summary_post_with_identifier(client):
     )
     assert resp.status_code == 200
     data = resp.get_json()
+    # The summary file should be a Bundle of type "document"
     assert data['resourceType'] == 'Bundle'
-    assert data['total'] == 1
+    assert data['type'] == 'document'
+    assert data['id'] == 'patient-1-summary'
+    # Verify it contains the patient resource
     assert len(data['entry']) == 1
     assert data['entry'][0]['resource']['id'] == 'patient-1'
 
@@ -300,3 +307,88 @@ def test_fhir_patient_summary_post_malformed_body(client):
     assert data['resourceType'] == 'Bundle'
     # With no identifier extracted, should return all patients (default behavior)
     assert data['total'] >= 0
+
+
+def test_fhir_patient_summary_with_path_id(client):
+    # Test GET /Patient/patient-1/$summary
+    resp = client.get('/fhir/Patient/patient-1/$summary')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    # Should return the patient-1_summary.json file
+    assert data['resourceType'] == 'Bundle'
+    assert data['type'] == 'document'
+    assert data['id'] == 'patient-1-summary'
+    assert len(data['entry']) == 1
+    assert data['entry'][0]['resource']['id'] == 'patient-1'
+
+
+def test_fhir_patient_summary_not_found(client):
+    # Test summary for a patient without a summary file
+    resp = client.get('/fhir/Patient/patient-3/$summary')
+    assert resp.status_code == 404
+    data = resp.get_json()
+    assert 'error' in data
+    assert data['error'] == 'Summary resource not found'
+
+
+def test_fhir_patient_summary_post_search_params(client):
+    # POST to /Patient/$summary with search parameters
+    body = {
+        "resourceType": "Parameters",
+        "id": "Focusing IPS request",
+        "parameter": [
+            {
+                "name": "identifier",
+                "valueIdentifier": {"value": "patient-2"}
+            }
+        ]
+    }
+    resp = client.post(
+        '/fhir/Patient/$summary',
+        json=body,
+        content_type='application/fhir+json'
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['resourceType'] == 'Bundle'
+    assert data['type'] == 'document'
+    assert data['id'] == 'patient-2-summary'
+
+
+def test_fhir_patient_summary_get_with_query_params(client):
+    # GET to /Patient/$summary with query parameters should work with search
+    resp = client.get('/fhir/Patient/$summary?_id=patient-1')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['resourceType'] == 'Bundle'
+    assert data['type'] == 'document'
+    assert data['id'] == 'patient-1-summary'
+
+
+def test_fhir_patient_search_multiple_params_and_logic(client):
+    # Test that search parameters are ANDed together
+    # Search for female patient named Jane - should return only patient-2
+    resp = client.get('/fhir/Patient?gender=female&name=Jane&_count=10')
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['total'] == 1
+    assert data['entry'][0]['resource']['id'] == 'patient-2'
+    
+    # Search for male patient named Jane - should return no results (ANDed)
+    resp2 = client.get('/fhir/Patient?gender=male&name=Jane&_count=10')
+    assert resp2.status_code == 200
+    data2 = resp2.get_json()
+    assert data2['total'] == 0
+    
+    # Search for female patient with identifier patient-1 - should return no results
+    resp3 = client.get('/fhir/Patient?gender=female&identifier=patient-1&_count=10')
+    assert resp3.status_code == 200
+    data3 = resp3.get_json()
+    assert data3['total'] == 0
+    
+    # Search for male patient with identifier patient-1 - should return patient-1
+    resp4 = client.get('/fhir/Patient?gender=male&identifier=patient-1&_count=10')
+    assert resp4.status_code == 200
+    data4 = resp4.get_json()
+    assert data4['total'] == 1
+    assert data4['entry'][0]['resource']['id'] == 'patient-1'

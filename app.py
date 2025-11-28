@@ -1,3 +1,4 @@
+import traceback
 from flask import Flask, request, jsonify, make_response
 import os
 import json
@@ -31,7 +32,7 @@ def load_json_files(folder):
     """Yield parsed JSON objects from files in folder (sorted by filename)."""
     if not os.path.isdir(folder):
         return []
-    files = sorted(f for f in os.listdir(folder) if f.lower().endswith('.json'))
+    files = sorted(f for f in os.listdir(folder) if f.lower().endswith('.json') and not f.lower().endswith('_summary.json'))
     results = []
     for fn in files:
         path = os.path.join(folder, fn)
@@ -41,6 +42,7 @@ def load_json_files(folder):
         except Exception:
             # skip invalid files
             continue
+    print(f"Loaded {len(results)} resources from {folder}")
     return results
 
 
@@ -56,6 +58,20 @@ def matches_search_params(resource, search_params):
         if param == '_id':
             # Direct field match, exact case-insensitive
             if str(resource.get('id', '')).lower() != value.lower():
+                return False
+        elif param == 'identifier':
+            # Special handling for identifier (can be array of objects)
+            identifiers = resource.get('identifier', [])
+            if not isinstance(identifiers, list):
+                identifiers = [identifiers]
+            #match if any identifier.value matches value
+            found = False
+            for ident in identifiers:
+                ident_value = ident.get('value', '')
+                if value.lower() == str(ident_value).lower():
+                    found = True
+                    break
+            if not found:
                 return False
         elif param == 'name':
             # Special handling for name (can be array of objects or string)
@@ -135,9 +151,10 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
     resource_folder = os.path.join(files_dir, resource_type)
     
     # Track if this is a $summary operation (always return bundle, never single resource)
-    is_summary_operation = resource_id == '$summary'
+    is_summary_operation = resource_id == '$summary' or (extra == '$summary')
     
     # Handle $summary special case: extract parameters from POST body
+    summary_identifier = None
     if resource_id == '$summary' and request.method == 'POST':
         try:
             body = request.get_json()
@@ -150,10 +167,12 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
                         # Extract the identifier value
                         identifier_val = param.get('valueIdentifier', {}).get('value')
                         if identifier_val:
-                            resource_id = identifier_val
+                            summary_identifier = identifier_val
                             break
         except Exception:
             # If JSON parsing fails or structure is unexpected, continue normally
+            print("Failed to parse $summary Parameters body")
+            traceback.print_exc()
             pass
     
     # Determine if explicit paging parameters were supplied
@@ -199,18 +218,42 @@ def fhir_endpoint_impl(resource_type, resource_id=None, extra=None):
     
     # Extract search parameters (exclude pagination params)
     search_params = {}
+    # Extract search parameters (exclude pagination params)
+    search_params = {}
     pagination_params = {'_count', '_offset', '_page'}
     for param, value in request.args.items():
         if param not in pagination_params:
             search_params[param] = value
     
-    # If resource_id is in the path (and not a special operation like $summary), add it as a search parameter (_id)
+    # Add extracted identifier from POST body if present
+    if summary_identifier:
+        search_params['identifier'] = summary_identifier
     if resource_id is not None and not resource_id.startswith('$'):
         search_params['_id'] = resource_id
     
     # Filter resources by search parameters
     resources = [r for r in all_resources if matches_search_params(r, search_params)]
     total = len(resources)
+
+    print(f"Found {total} matching resources for type {resource_type} with search params {search_params}")
+    print(f"listing resource IDs: {[r.get('id') for r in resources]}")
+    # handle summary operation: return the json file that is named <resource_id>_summary.json
+    if is_summary_operation and total == 1:
+        resource_id = resources[0].get('id')
+        summary_filename = f"{resource_id}_summary.json"
+        summary_path = os.path.join(resource_folder, summary_filename)
+        if os.path.isfile(summary_path):
+            try:
+                with open(summary_path, 'r', encoding='utf-8') as fh:
+                    summary_resource = json.load(fh)
+                print(f"Returning summary resource from {summary_path}")
+                resp = make_response(json.dumps(summary_resource, ensure_ascii=False))
+                resp.headers['Content-Type'] = 'application/fhir+json; charset=utf-8'
+                return resp
+            except Exception:
+                return jsonify({'error': 'Failed to load summary resource'}), 500
+        else:
+            return jsonify({'error': 'Summary resource not found'}), 404
 
     # Return single resource directly only if: ID lookup AND no explicit paging params AND not a special operation
     if total == 1 and resource_id is not None and not (has_count or has_page or has_offset) and not resource_id.startswith('$') and not is_summary_operation:

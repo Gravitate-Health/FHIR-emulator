@@ -1,6 +1,9 @@
 {
   "resourceType": "Patient",
   "id": "patient-1",
+  "identifier": [
+    { "system": "http://example.org/ids", "value": "patient-1" }
+  ],
   "name": [
     { "use": "official", "family": "Doe", "given": ["John"] }
   ],

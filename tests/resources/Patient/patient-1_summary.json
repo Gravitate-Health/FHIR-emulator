@@ -1,0 +1,18 @@
+{
+  "resourceType": "Bundle",
+  "id": "patient-1-summary",
+  "type": "document",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "name": [
+          { "use": "official", "family": "Doe", "given": ["John"] }
+        ],
+        "gender": "male",
+        "birthDate": "1980-01-01"
+      }
+    }
+  ]
+}
